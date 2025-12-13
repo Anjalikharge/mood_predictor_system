@@ -21,6 +21,16 @@ class ModelLoader:
     
     def load_model(self):
         """Load trained model and vectorizer"""
+        # Try models folder first (where they were trained together)
+        model_path = os.path.join(self.model_dir, 'mood_model.pkl')
+        vectorizer_path = os.path.join(self.model_dir, 'vectorizer.pkl')
+        
+        if os.path.exists(model_path) and os.path.exists(vectorizer_path):
+            self.model = joblib.load(model_path)
+            self.vectorizer = joblib.load(vectorizer_path)
+            return True
+        
+        # Fallback to base directory
         model_path = os.path.join(self.base_dir, 'mood_model.pkl')
         vectorizer_path = os.path.join(self.base_dir, 'vectorizer.pkl')
         
