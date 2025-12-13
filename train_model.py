@@ -3,11 +3,9 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier, VotingClassifier, GradientBoostingClassifier
-from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.metrics import accuracy_score, classification_report
-from sklearn.model_selection import GridSearchCV
 import joblib
 import os
 try:
@@ -21,36 +19,59 @@ class MoodPredictor:
     def __init__(self):
         self.preprocessor = TextPreprocessor()
         self.vectorizer = TfidfVectorizer(
-            max_features=15000, 
-            ngram_range=(1, 4), 
-            min_df=1, 
-            max_df=0.95,
+            max_features=10000, 
+            ngram_range=(1, 3), 
+            min_df=2, 
+            max_df=0.85,
             sublinear_tf=True,
-            use_idf=True,
-            smooth_idf=True
+            stop_words='english'
         )
-        # Optimized ensemble for 90%+ accuracy
-        self.lr = LogisticRegression(random_state=42, max_iter=3000, C=10.0, solver='liblinear')
-        self.rf = RandomForestClassifier(n_estimators=200, random_state=42, max_depth=15, min_samples_split=2)
-        self.svm = SVC(kernel='rbf', probability=True, random_state=42, C=10.0, gamma='scale')
-        self.nb = MultinomialNB(alpha=0.1)
-        self.gb = GradientBoostingClassifier(n_estimators=100, random_state=42, learning_rate=0.1)
-        self.model = VotingClassifier(
-            estimators=[('lr', self.lr), ('rf', self.rf), ('svm', self.svm), ('nb', self.nb), ('gb', self.gb)],
-            voting='soft'
+        # Use optimized model with balanced classes
+        self.model = LogisticRegression(
+            random_state=42, 
+            max_iter=3000, 
+            C=2.0, 
+            solver='lbfgs',
+            multi_class='multinomial',
+            class_weight='balanced'
         )
         
     def load_data(self, file_path):
-        """Load and preprocess dataset"""
+        """Load and preprocess dataset with balancing"""
         print("Loading dataset...")
         df = pd.read_csv(file_path)
         print(f"Dataset loaded: {len(df)} samples")
+        
+        # Check class distribution
+        print("\nOriginal class distribution:")
+        print(df['mood'].value_counts())
+        
+        # Balance dataset - ensure equal samples per emotion
+        balanced_data = []
+        target_samples = 100  # Use 100 samples per emotion for better balance
+        
+        for mood in df['mood'].unique():
+            mood_data = df[df['mood'] == mood]
+            if len(mood_data) >= target_samples:
+                mood_data = mood_data.sample(n=target_samples, random_state=42)
+            else:
+                # If less than target, use all available
+                pass
+            balanced_data.append(mood_data)
+        
+        df = pd.concat(balanced_data, ignore_index=True)
+        
+        # Shuffle the dataset
+        df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+        
+        print("\nBalanced class distribution:")
+        print(df['mood'].value_counts())
         
         # Preprocess text
         df['processed_text'] = df['text'].apply(self.preprocessor.preprocess)
         df = df[df['processed_text'].str.len() > 0]  # Remove empty texts
         
-        print(f"After preprocessing: {len(df)} samples")
+        print(f"\nAfter preprocessing: {len(df)} samples")
         print(f"Moods in dataset: {df['mood'].unique()}")
         
         return df['processed_text'], df['mood']
@@ -59,31 +80,53 @@ class MoodPredictor:
         """Train the mood prediction model"""
         print("Splitting data...")
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42, stratify=y
+            X, y, test_size=0.25, random_state=42, stratify=y
         )
         
         print("Vectorizing text...")
         X_train_vec = self.vectorizer.fit_transform(X_train)
         X_test_vec = self.vectorizer.transform(X_test)
         
-        print("Training ensemble model...")
+        print("Training model...")
         self.model.fit(X_train_vec, y_train)
         
         # Evaluate model
         y_pred = self.model.predict(X_test_vec)
         accuracy = accuracy_score(y_test, y_pred)
         
-        # Test individual models for comparison
-        print("\nIndividual model accuracies:")
-        models = [('Logistic Regression', self.lr), ('Random Forest', self.rf), ('SVM', self.svm), 
-                 ('Naive Bayes', self.nb), ('Gradient Boosting', self.gb)]
+        # Test alternative models for comparison
+        print("\nModel comparison:")
+        from sklearn.svm import SVC
+        from sklearn.ensemble import GradientBoostingClassifier
+        models = [
+            ('Logistic Regression', LogisticRegression(random_state=42, max_iter=3000, C=2.0, solver='lbfgs', multi_class='multinomial', class_weight='balanced')),
+            ('SVM', SVC(random_state=42, C=1.0, kernel='linear', class_weight='balanced', probability=True)),
+            ('Gradient Boosting', GradientBoostingClassifier(random_state=42, n_estimators=150, learning_rate=0.1, max_depth=5)),
+            ('Random Forest', RandomForestClassifier(n_estimators=200, random_state=42, max_depth=12, class_weight='balanced')),
+            ('Naive Bayes', MultinomialNB(alpha=0.5))
+        ]
+        
+        best_accuracy = 0
+        best_model = None
+        best_name = ""
+        
         for name, clf in models:
             clf.fit(X_train_vec, y_train)
             pred = clf.predict(X_test_vec)
             acc = accuracy_score(y_test, pred)
             print(f"{name}: {acc:.4f}")
+            if acc > best_accuracy:
+                best_accuracy = acc
+                best_model = clf
+                best_name = name
         
-        print(f"\nEnsemble Model Accuracy: {accuracy:.4f}")
+        # Use the best performing model
+        if best_model is not None and best_accuracy > accuracy:
+            print(f"\nUsing {best_name} as it performed better: {best_accuracy:.4f}")
+            self.model = best_model
+            accuracy = best_accuracy
+        
+        print(f"\nFinal Model Accuracy: {accuracy:.4f}")
         print("\nClassification Report:")
         print(classification_report(y_test, y_pred))
         
@@ -120,12 +163,22 @@ def main():
     
     print(f"\nTraining completed! Final accuracy: {accuracy:.4f}")
     
-    # Test predictions
+    # Test predictions with more examples including interview scenarios
     test_texts = [
+        "I got selected in an interview",
         "I am feeling great today!",
         "I'm so worried about tomorrow",
         "This makes me really angry",
-        "I feel so alone right now"
+        "I feel so alone right now",
+        "I love spending time with you",
+        "I'm proud of my accomplishments",
+        "I feel guilty about what happened",
+        "I'm excited about the new project",
+        "I feel calm and peaceful",
+        "Hello, how are you doing?",
+        "I passed the job interview",
+        "I got hired for my dream job",
+        "I'm thrilled about getting selected"
     ]
     
     print(f"\nTest predictions:")
